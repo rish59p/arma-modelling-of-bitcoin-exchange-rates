@@ -1,0 +1,752 @@
+---
+title: "Modelling Cryptocurrency exchange rates using ARMA Models"
+subtitle: "Applied Macroeconometrics Assignment I"
+author: "Rishabh Patil | 2021A7PS0464H"
+layout: page
+output:
+  pdf_document: 
+    includes:
+      in_header: "wrap-code.tex"
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+    keep_tex: yes
+    highlight: espresso
+    df_print: kable
+    fig_crop: no
+  html_document: 
+    toc: yes
+    highlight: textmate
+    theme: simplex
+    fig_width: 10
+    fig_height: 7
+    fig_caption: yes
+  html_notebook: 
+    toc: yes
+    highlight: espresso
+    theme: united
+    fig_caption: yes
+    number_sections: yes
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r}
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+
+```
+
+```{r}
+#install.packages("quantmod")
+```
+
+```{r warning=FALSE}
+library(quantmod)
+```
+
+# Description of Dataset
+
+For our study, we'd be analyzing the exchange rates of the cryptocurrency Bitcoin, more precisely the weekly returns.
+
+**The variable of concern here is the price(in USD) of Bitcoin (returns on it).**
+
+Since there is a general notion of cryptocurrencies having a 4 year cycle, we'd be looking at 8-10 year data. And to make our analysis feasible, instead of a daily chart, we would be analyzing a weekly rolling average for our time period of 10 years.
+
+## The data
+
+```{r}
+btc_df <- getSymbols("BTC-USD", src = "yahoo", from = Sys.Date() - 365 * 10, to = Sys.Date(), auto.assign = FALSE)
+print(head(btc_df))
+```
+
+### Candlestick Chart (daily pricing)
+
+```{r fig.height=10, fig.width=14}
+chartSeries(btc_df, name="BTC-USD", subset="last 120 months")
+```
+
+### Line Graph(daily pricing)
+
+```{r fig.height=10, fig.width=14}
+library(ggplot2)
+
+ggplot(data=btc_df,aes(y=btc_df$`BTC-USD.Close`,x=index(btc_df)),group=1)+
+  geom_line()
+
+```
+
+### Clustering Month-wise avg price:
+
+```{r}
+#install.packages("xts")
+```
+
+```{r}
+library(xts)
+btc_week_df<- apply.weekly(btc_df,FUN = mean)
+head(btc_week_df)
+```
+
+### Line Graph
+
+```{r fig.height=12, fig.width=18}
+ggplot(data=btc_week_df,aes(y=btc_week_df$`BTC-USD.Close`,x=index(btc_week_df)),group=1)+
+  geom_line()
+```
+
+### Candlestick Graph
+
+```{r fig.height=10, fig.width=14}
+chartSeries(btc_week_df)
+```
+
+### Returns
+
+For plotting the returns, we use this formula:
+
+$$
+R = \frac{S(t+1)-S(t)}{S(t)} \text{ or plotting the log return: } RLt = ln\biggl(\frac{S(t+1)}{S(t)}\biggr)
+$$
+
+```{r}
+daily_returns <- log(btc_df/lag(btc_df,1))
+ggplot(data=daily_returns,aes(y=daily_returns$`BTC-USD.Close`,x=index(daily_returns)),group=1)+
+  geom_line()
+```
+
+```{r}
+weekly_return <- log(btc_week_df$`BTC-USD.Close`/lag(btc_week_df$`BTC-USD.Close`,1))
+ggplot(data=weekly_return,aes(y=weekly_return$`BTC-USD.Close`,x=index(weekly_return)),group=1)+
+  geom_line()
+```
+
+This is the basis of our analysis
+
+## Visual Interpretation
+
+From the above log returns chart we can see that the long run expectation for weekly return is 0
+
+$$
+\mathop{\mathbb{E}}[y_t]=0
+$$
+
+```{r}
+ggplot(weekly_return, aes(weekly_return$`BTC-USD.Close`)) +
+  geom_histogram()
+```
+
+The data looks normally distributed with slight outliers.
+
+**looking for seasonality:**
+
+```{r}
+yearly_return<-yearlyReturn(btc_df)
+ggplot(data=yearly_return,aes(y=yearly_return$yearly.returns,x=index(yearly_return)),group=1)+
+  geom_line()
+```
+
+We do see that there is a 4-year cycle apparent from the yearly returns, that is, the returns rise up for a year, then reach peak very steeply the next and a steep decline sets in ending the cycle.
+
+**But apart from the yearly return analysis the weekly returns appear stationery.**
+
+The objective of this study is to model the weekly returns with appropriate ARMA model(s) and predict the trend (forecast it).
+
+### Estimation and Holdback dataset
+
+**Estimation:** from 2014-09-21 to 2022-09-21 - *train data*
+
+**Holdback:** from 2022-09-28 to 2024-02-23 - *test data*
+
+(\~75/25 split) (split post cycle)
+
+```{r}
+btc_week_est <- btc_week_df[index(btc_week_df) >= as.Date("2014-09-21") & 
+                                index(btc_week_df) <= as.Date("2022-09-21"), ]
+
+btc_week_hb <- btc_week_df[index(btc_week_df) >= as.Date("2022-09-22") & 
+                              index(btc_week_df) <= as.Date("2024-02-23"), ]
+```
+
+```{r}
+chartSeries(btc_week_est)
+```
+
+```{r}
+chartSeries(btc_week_hb)
+```
+
+```{r}
+weekly_return_est <- weekly_return[index(weekly_return) >= as.Date("2014-09-21") & 
+                                index(weekly_return) <= as.Date("2022-09-21"), ]
+weekly_return_hb <- weekly_return[index(weekly_return) >= as.Date("2022-09-22") & 
+                                index(weekly_return) <= as.Date("2024-02-23"), ]
+```
+
+```{r}
+ggplot(data=weekly_return_est,aes(y=weekly_return_est$`BTC-USD.Close`,x=index(weekly_return_est)),group=1)+
+  geom_line()
+```
+
+```{r}
+ggplot(data=weekly_return_hb,aes(y=weekly_return_hb$`BTC-USD.Close`,x=index(weekly_return_hb)),group=1)+
+  geom_line()
+```
+
+# Model fitting and model selection
+
+## Analyzing ACF and PACF
+
+```{r}
+acf(weekly_return_est[2:length(weekly_return_est)])
+```
+
+**We see that the *ACF is smoothly decaying* which means its more *likely to be an AR process***
+
+```{r}
+pacf(weekly_return_est[2:length(weekly_return_est)])
+```
+
+There is no continuous decay in PACF, the value abruptly falls after first lag. so we can assume it to be a AR process. **Note:** *The 19th lag is also significant, suggesting some seasonality. But we will ignore that for now.*
+
+Since one lag is significant, AR(1) model can be tested. We will also test ARMA(1,1) and ARMA(1,2) and ARMA(2,1)
+
+## Testing ARMA models
+
+### AR(1)
+
+```{r}
+ar1<-arima(weekly_return_est$`BTC-USD.Close`,order=c(1,0,0))
+summary(ar1)
+```
+
+#### Coefficients Test
+
+The coefficients have some standard error but can be considered insignificant. Statistically testing the significance:
+
+```{r}
+library(lmtest)
+coeftest(ar1)
+```
+
+The coefficients are statistically significant. (The Intercept has a lower significance threshold, but can be fitted in for the model.)
+
+#### Residual Check
+
+```{r}
+library('forecast')
+checkresiduals(ar1)
+```
+
+The residuals seem to be normally distributed and have a mean of 0. The ACF has an outlier at 19th lag(as discussed earlier maybe due to seasonality).
+
+#### Stationarity, Invertibility and Causality
+
+Since AR(1), we only need to check for stationarity and causality (only pertaining to $\phi(z)$)
+
+$$
+\phi(z)y_t = \theta(z)u_t
+$$
+
+```{r}
+autoplot(ar1)
+```
+
+roots within the circle, stationary and non-causal.
+
+#### Mean of the model
+
+$$
+\mathop{\mathbb{E}}[y_t \sim ARMA(p,q)]=\mathop{\mathbb{E}}[y_t \sim AR(p)] = \frac{a_0}{1-\sum_{i=1}^pa_i}
+$$
+
+```{r}
+ar1$coef
+```
+
+$$
+= -0.009/0.2808 \approx 0.3205
+$$
+
+### ARMA(2,1)
+
+```{r}
+arma21<-arima(weekly_return_est$`BTC-USD.Close`,order=c(2,0,1))
+arma21
+```
+
+The coefficients have very high standard error
+
+#### Coefficients Test
+
+```{r}
+coeftest(arma21)
+```
+
+The coefficients are not significant.
+
+#### Residual Check
+
+```{r}
+checkresiduals(arma21)
+
+```
+
+#### Stationarity, Invertibility and Causality
+
+```{r}
+autoplot(arma21)
+```
+
+non-causal stationary,non-invertible.
+
+#### Mean
+
+=
+
+```         
+0.0092889/(1-(0.1362553+0.0495093))
+= 0.01140812595
+```
+
+### ARMA(1,2)
+
+```{r}
+arma12<-arima(weekly_return_est$`BTC-USD.Close`,order=c(1,0,2))
+arma12
+```
+
+#### Coefficients Test
+
+```{r}
+coeftest(arma12)
+```
+
+Coefficients are not significant.
+
+#### Residual Check
+
+```{r}
+checkresiduals(arma12)
+```
+
+#### Stationarity, Invertibility and Causality
+
+```{r}
+autoplot(arma12)
+```
+
+non-Invertible, stationary and not causal
+
+#### Mean
+
+```         
+= 0.0092838/(1-0.3042082)
+= 0.01334278443
+```
+
+### MA(2)
+
+```{r}
+ma2 <-arima(weekly_return_est$`BTC-USD.Close`,order=c(0,0,2))
+summary(ma2)
+```
+
+Moderately High Standard Errors
+
+#### Coefficients Test
+
+```{r}
+coeftest(ma2)
+```
+
+The ma1 coefficient appears to be significant that too with a narrower CI, and the ma2 and intercept appear to be significant with loose constraints.
+
+#### Residual Check
+
+```{r}
+checkresiduals(ma2)
+```
+
+Even the residuals appear to be normally distributed at zero.
+
+#### Stationarity, Causality and Invertibility
+
+```{r}
+autoplot(ma2)
+```
+
+There is no invertibility and stationarity is also met. (no causality as well)
+
+#### Mean
+
+= 0
+
+### Ljung-Box test for AR(1) MA(2) and ARMA(1,2)
+
+```{r}
+print(Box.test(ar1$resid, type="Ljung-Box", lag=20))
+print(Box.test(ma2$resid, type="Ljung-Box", lag=20))
+print(Box.test(arma12$resid, type="Ljung-Box", lag=20))
+```
+
+```{r}
+d1<- checkresiduals(ar1)$statistic
+d2<- checkresiduals(ma2)$statistic
+d3<- checkresiduals(arma12)$statistic
+print(d1)
+print(d2)
+print(d3)
+```
+
+#### AIC
+
+```{r}
+print(AIC(ar1))
+print(AIC(ma2))
+print(AIC(arma12))
+```
+
++-------------------+-----------------+----------------+----------------+
+| Col1              | ARMA(1,2)       | AR(1)          | MA(2)          |
++===================+=================+================+================+
+| AR Coeff 1        | 0.3042(1.0178)  | 0.2808(0.0469) | \-             |
++-------------------+-----------------+----------------+----------------+
+| AR Coeff 2        | \-              | \-             | \-             |
++-------------------+-----------------+----------------+----------------+
+| MA Coeff 1        | -0.0259(1.0238) | \-             | 0.2777(0.0487) |
++-------------------+-----------------+----------------+----------------+
+| MA Coeff 2        | -0.0016(0.2902) | \-             | 0.0806(0.0474) |
++-------------------+-----------------+----------------+----------------+
+| AIC               | ```             | ```            | ```            |
+|                   | -885.7352       | -887.8655      | -883.9013      |
+|                   | ```             | ```            | ```            |
++-------------------+-----------------+----------------+----------------+
+| Q-Statistic       | ```             | ```            | ```            |
+|                   | 4.6056          | 4.7308         | 4.7989         |
+|                   | ```             | ```            | ```            |
++-------------------+-----------------+----------------+----------------+
+| p-value of Q-Stat | ```             | ```            | ```            |
+|                   | 0.708           | 0.8571         | 0.7788         |
+|                   | ```             | ```            | ```            |
++-------------------+-----------------+----------------+----------------+
+
+: Table 1
+
+# Forecasting
+
+We will forecast for :
+
+```{r}
+length(weekly_return_hb)
+```
+
+`74` weeks ahead.
+
+```{r}
+ar1_forecast <- forecast(ar1, h = 74)
+plot(ar1_forecast)
+```
+
+```{r}
+ts.plot(ar1_forecast$mean, weekly_return_hb, lty=c(1,2))
+```
+
+The forecast seems to not have any significant variation
+
+**adding higher order arma models**
+
+```{r}
+arma192 <- arima(weekly_return_est$`BTC-USD.Close`,order=c(19,0,2))
+summary(arma192)
+```
+
+```{r}
+coeftest(arma192)
+```
+
+```{r}
+checkresiduals(arma192)
+```
+
+Stable residuals with stationarity
+
+**Forecasts:**
+
+```{r}
+arma192_forecast<-forecast(arma192, h=74)
+plot(arma192_forecast)
+```
+
+```{r}
+ts.plot(arma192_forecast$mean, weekly_return_hb$`BTC-USD.Close`, lty=c(1,2))
+```
+
+**ARMA(2,19)**
+
+```{r}
+arma219 <- arima(weekly_return_est$`BTC-USD.Close`,order=c(2,0,19))
+summary(arma219)
+```
+
+```{r}
+coeftest(arma219)
+```
+
+```{r}
+checkresiduals(arma219)
+```
+
+```{r}
+arma219_forecast<-forecast(arma219,h=74)
+plot(arma219_forecast)
+```
+
+```{r}
+ts.plot(arma219_forecast$mean, weekly_return_hb$`BTC-USD.Close`, lty=c(1,2))
+```
+
+```{r}
+weekly_return_hb_ts <- as.ts(weekly_return_hb,start=2927)
+errors_ar1 <- weekly_return_hb_ts - ar1_forecast$mean
+errors_arma192 <- weekly_return_hb_ts - arma192_forecast$mean
+errors_arma219 <- weekly_return_hb_ts - arma219_forecast$mean
+```
+
+```{r}
+mspear1 <- mean(errors_ar1^2)
+mspearma192 <- mean(errors_arma192^2)
+mspearma219 <- mean(errors_arma219^2)
+```
+
+### Paired F-test
+
+#### AR1 ARMA192
+
+```{r}
+f_ararma192 <- ((mspear1 - mspearma192) / (74 - 1)) / (mspearma192 / (74-21))
+p_value_f <- 1 - pf(f_ararma192, df1 = 74 - 1, df2 = 74-21)
+p_value_f
+```
+
+The p-value of 1 suggests that there is not enough evidence to reject the null hypothesis that the two models have the same Mean Squared Prediction Error (MSPE). A p-value of 1 indicates that the difference in MSPE between the two models is likely due to random chance, rather than a true difference in forecast accuracy.
+
+There might also be a chance of overfit.
+
+#### AR1 ARMA(2,19)
+
+```{r}
+f_ararma219 <- ((mspear1 - mspearma219) / (74 - 1)) / (mspearma219 / (74-21))
+p_value_f <- 1 - pf(f_ararma219, df1 = 74 - 1, df2 = 74-21)
+p_value_f
+```
+
+Same p-value
+
+#### ARMA(19,2) ARMA(2,19)
+
+```{r}
+f_armaarma <- ((mspearma192 - mspearma219) / (74 - 21)) / (mspearma219 / (74-21))
+p_value_f <- 1 - pf(f_armaarma, df1 = 74 - 21, df2 = 74-21)
+p_value_f
+```
+
+Same p-value
+
+### DM Test
+
+```{r}
+dm_test_1<- dm.test(errors_ar1^2, errors_arma192^2, h = 74)
+dm_test_1
+```
+
+```{r}
+dm_test_2<- dm.test(errors_ar1^2, errors_arma219^2, h = 74)
+dm_test_2
+```
+
+```{r}
+dm_test_3<- dm.test(errors_arma192^2, errors_arma219^2, h = 74)
+dm_test_3
+```
+
+#### Absolute loss function
+
+Since Absolute loss penalizes large errors linearly, whereas quadratic loss penalizes them quadratically, we can have a better differentiation wrt larger errors.
+
+```{r}
+dm_test_ar1_arma192 <- dm.test(abs(errors_ar1), abs(errors_arma192), alternative = "two.sided", h = 1)
+dm_test_ar1_arma219 <- dm.test(abs(errors_ar1), abs(errors_arma219), alternative = "two.sided", h = 1)
+dm_test_arma192_arma219 <- dm.test(abs(errors_arma192), abs(errors_arma219), alternative = "two.sided", h = 1)
+
+# Print DM test results
+cat("DM test AR(1) vs ARMA(19,2):", "statistic =", dm_test_ar1_arma192$statistic, "p-value =", dm_test_ar1_arma192$p.value, "\n")
+cat("DM test AR(1) vs ARMA(2,19):", "statistic =", dm_test_ar1_arma219$statistic, "p-value =", dm_test_ar1_arma219$p.value, "\n")
+cat("DM test ARMA(19,2) vs ARMA(2,19):", "statistic =", dm_test_arma192_arma219$statistic, "p-value =", dm_test_arma192_arma219$p.value, "\n")
+
+```
+
+### Table 2
+
++--------------------------+----------------+--------------+
+|                          | Test Statistic | p-value      |
++==========================+================+==============+
+| AR(1) vs ARMA(19,2)      |                |              |
++--------------------------+----------------+--------------+
+| F-test                   | ```            | 1            |
+|                          | -9.87831e-05   |              |
+|                          | ```            |              |
++--------------------------+----------------+--------------+
+| DM-test (Quadratic Loss) | ```            | ```          |
+|                          | 0.5157         | 0.6076       |
+|                          | ```            | ```          |
++--------------------------+----------------+--------------+
+| DM-test (Abs Loss)       | -0.0047        | 0.99621      |
++--------------------------+----------------+--------------+
+| AR(1) vs ARMA(2,19)      |                |              |
++--------------------------+----------------+--------------+
+| F-test                   | ```            | 1            |
+|                          | 0.00620222     |              |
+|                          | ```            |              |
++--------------------------+----------------+--------------+
+| DM-test (Quadratic Loss) | ```            | 1            |
+|                          | 0              |              |
+|                          | ```            |              |
++--------------------------+----------------+--------------+
+| DM-test (Abs Loss)       | ```            | ```          |
+|                          | 0.2154764      | 0.8299968    |
+|                          | ```            | ```          |
++--------------------------+----------------+--------------+
+| AR(19,2) vs ARMA(2,19)   |                |              |
++--------------------------+----------------+--------------+
+| F-test                   | ```            | 1            |
+|                          | 0.008679921    |              |
+|                          | ```            |              |
++--------------------------+----------------+--------------+
+| DM-test (Quadratic Loss) | ```            | ```          |
+|                          | 0.58104        |  0.563       |
+|                          | ```            | ```          |
++--------------------------+----------------+--------------+
+| DM-test (Abs Loss)       | ```            | ```          |
+|                          | 0.3078686      | 0.7590591    |
+|                          | ```            | ```          |
++--------------------------+----------------+--------------+
+
+```{r}
+mean_forecast_ar1 <- mean(ar1_forecast$mean)
+mean_forecast_arma192 <- mean(arma192_forecast$mean)
+mean_forecast_arma219 <- mean(arma219_forecast$mean)
+
+squared_diff_ar1 <- (ar1_forecast$mean - mean_forecast_ar1)^2
+forecast_variance_ar1 <- mean(squared_diff_ar1)
+
+squared_diff_arma192 <- (arma192_forecast$mean - mean_forecast_arma192)^2
+forecast_variance_arma192 <- mean(squared_diff_arma192)
+
+squared_diff_arma219 <- (arma219_forecast$mean - mean_forecast_arma219)^2
+forecast_variance_arma219 <- mean(squared_diff_arma219)
+
+cat("Forecast Variance AR(1):", forecast_variance_ar1, "\n")
+cat("Forecast Variance ARMA(19,2):", forecast_variance_arma192, "\n")
+cat("Forecast Variance ARMA(2,19):", forecast_variance_arma219, "\n")
+
+```
+
+AR(1) shows least variance but without trend.
+
+Changing the estimation and holdback
+
+```{r}
+btc_week_est <- btc_week_df[index(btc_week_df) >= as.Date("2014-09-21") & 
+                                index(btc_week_df) <= as.Date("2023-07-21"), ]
+
+btc_week_hb <- btc_week_df[index(btc_week_df) >= as.Date("2023-07-22") & 
+                              index(btc_week_df) <= as.Date("2024-02-23"), ]
+```
+
+80-20
+
+```{r}
+weekly_return_est <- weekly_return[index(weekly_return) >= as.Date("2014-09-21") & 
+                                index(weekly_return) <= as.Date("2023-07-21"), ]
+weekly_return_hb <- weekly_return[index(weekly_return) >= as.Date("2023-07-22") & 
+                                index(weekly_return) <= as.Date("2024-02-23"), ]
+```
+
+\
+
+```{r}
+ar1<-arima(weekly_return_est$`BTC-USD.Close`,order=c(1,0,0))
+print(summary(ar1))
+
+arma192 <- arima(weekly_return_est$`BTC-USD.Close`,order=c(19,0,2))
+print(summary(arma192))
+
+arma219 <- arima(weekly_return_est$`BTC-USD.Close`,order=c(2,0,19))
+print(summary(arma219))
+```
+
+```{r}
+arma219_forecast<-forecast(arma219,h=31)
+plot(arma219_forecast)
+```
+
+```{r}
+arma192_forecast<-forecast(arma192,h=31)
+plot(arma192_forecast)
+```
+
+```{r}
+ar1_forecast<-forecast(ar1,h=31)
+plot(ar1_forecast)
+```
+
+```{r}
+ts.plot(arma219_forecast$mean, weekly_return_hb, lty=c(1,2))
+```
+
+```{r}
+ts.plot(ar1_forecast$mean, weekly_return_hb, lty=c(1,2))
+```
+
+```{r}
+ts.plot(arma192_forecast$mean, weekly_return_hb, lty=c(1,2))
+```
+
+```{r}
+weekly_return_hb_ts <- as.ts(weekly_return_hb,start=3228)
+errors_ar1 <- weekly_return_hb_ts - ar1_forecast$mean
+errors_arma192 <- weekly_return_hb_ts - arma192_forecast$mean
+errors_arma219 <- weekly_return_hb_ts - arma219_forecast$mean
+mspear1 <- mean(errors_ar1^2)
+mspearma192 <- mean(errors_arma192^2)
+mspearma219 <- mean(errors_arma219^2)
+print(mspear1)
+print(mspearma192)
+print(mspearma219)
+```
+
+The error has been reduced but the is still similar (lack of) trend.
+
+```{r}
+mean_forecast_ar1 <- mean(ar1_forecast$mean)
+mean_forecast_arma192 <- mean(arma192_forecast$mean)
+mean_forecast_arma219 <- mean(arma219_forecast$mean)
+
+squared_diff_ar1 <- (ar1_forecast$mean - mean_forecast_ar1)^2
+forecast_variance_ar1 <- mean(squared_diff_ar1)
+
+squared_diff_arma192 <- (arma192_forecast$mean - mean_forecast_arma192)^2
+forecast_variance_arma192 <- mean(squared_diff_arma192)
+
+squared_diff_arma219 <- (arma219_forecast$mean - mean_forecast_arma219)^2
+forecast_variance_arma219 <- mean(squared_diff_arma219)
+
+cat("Forecast Variance AR(1):", forecast_variance_ar1, "\n")
+cat("Forecast Variance ARMA(19,2):", forecast_variance_arma192, "\n")
+cat("Forecast Variance ARMA(2,19):", forecast_variance_arma219, "\n")
+
+```
+
+AR1 returns minimum forecast variance, but doesnt show any trend.
+
+Despite inaccuracy due to seasonality of data we do have consistent results.
